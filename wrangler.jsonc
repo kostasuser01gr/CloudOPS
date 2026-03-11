@@ -1,0 +1,155 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "cloudops",
+  "main": "worker/src/index.ts",
+  "compatibility_date": "2026-03-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "minify": true,
+
+  // Build/dev flow uses @cloudflare/vite-plugin via vite.config.ts.
+  "build": {
+    "command": "vite build"
+  },
+
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  },
+
+  "placement": {
+    "mode": "smart"
+  },
+
+  "vars": {
+    "APP_NAME": "CloudOPS",
+    "APP_ENV": "production",
+    "DEFAULT_LOCALE": "el-GR",
+    "DEFAULT_TIMEZONE": "Europe/Athens",
+
+    "LOG_LEVEL": "info",
+    "TRACE_ENABLED": "true",
+    "TRACE_SAMPLE_RATE": "1.0",
+
+    "CUSTOMER_SESSION_COOKIE_NAME": "__Host-cloudops_csid",
+    "STAFF_SESSION_COOKIE_NAME": "__Host-cloudops_ssid",
+    "STAFF_CSRF_COOKIE_NAME": "__Host-cloudops_staff_csrf",
+
+    "CUSTOMER_SESSION_TTL_S": "2592000",
+    "STAFF_SESSION_TTL_S": "28800",
+    "STAFF_SESSION_ROTATE_AFTER_S": "1800",
+
+    "MAX_UPLOAD_FILES_PER_RESERVATION": "15",
+    "MAX_UPLOAD_BYTES_PER_FILE": "15728640",
+    "UPLOAD_INTENT_TTL_S": "300",
+    "UPLOAD_MAX_PARALLEL_CLIENT_FILES": "2",
+
+    "DRIVE_SYNC_MAX_ATTEMPTS": "15",
+    "DRIVE_SYNC_RETRY_BASE_MS": "2000",
+
+    "DIAGNOSTICS_ENABLED": "true",
+    "HEALTH_ENDPOINT_PREFIX": "/api/health",
+    "DIAGNOSTICS_ENDPOINT_PREFIX": "/api/diagnostics",
+
+    "ALERT_INVALID_RESERVATION_THRESHOLD_10M": "10",
+    "ALERT_UPLOAD_FAILURE_THRESHOLD_10M": "8",
+    "ALERT_DRIVE_FAILURE_THRESHOLD_10M": "5",
+    "ALERT_VALIDATION_P95_MS_THRESHOLD": "1200",
+    "ALERT_WS_DISCONNECT_RATE_THRESHOLD": "0.2",
+    "ALERT_SESSION_CREATION_SPIKE_10M": "25",
+    "ALERT_DLQ_WARNING_COUNT_15M": "10",
+    "ALERT_DLQ_CRITICAL_COUNT_15M": "50",
+    "ALERT_DLQ_OLDEST_AGE_S_CRITICAL": "900"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cloudops-d1",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "UPLOADS_BUCKET",
+      "bucket_name": "cloudops-uploads",
+      "preview_bucket_name": "cloudops-uploads-dev"
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CHAT_ROOM_DO",
+        "class_name": "ChatRoomDO"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ChatRoomDO"]
+    }
+  ],
+
+  "queues": {
+    "producers": [
+      {
+        "binding": "DRIVE_SYNC_QUEUE",
+        "queue": "cloudops-drive-sync"
+      },
+      {
+        "binding": "INCIDENT_EVENTS_QUEUE",
+        "queue": "cloudops-incident-events"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "cloudops-drive-sync",
+        "max_batch_size": 20,
+        "max_batch_timeout": 10,
+        "max_retries": 15,
+        "dead_letter_queue": "cloudops-drive-sync-dlq"
+      },
+      {
+        "queue": "cloudops-incident-events",
+        "max_batch_size": 50,
+        "max_batch_timeout": 5,
+        "max_retries": 10,
+        "dead_letter_queue": "cloudops-incident-events-dlq"
+      },
+      {
+        "queue": "cloudops-drive-sync-dlq",
+        "max_batch_size": 20,
+        "max_batch_timeout": 10,
+        "max_retries": 0
+      },
+      {
+        "queue": "cloudops-incident-events-dlq",
+        "max_batch_size": 50,
+        "max_batch_timeout": 5,
+        "max_retries": 0
+      }
+    ]
+  },
+
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+
+  "dev": {
+    "port": 8787,
+    "local_protocol": "http"
+  }
+}
