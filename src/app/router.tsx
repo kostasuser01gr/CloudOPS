@@ -54,6 +54,8 @@ import type {
   StaffTimelineEvent
 } from "@shared/types/domain";
 
+import { DashboardPage, SchedulingPage, FleetPage, WasherWorkspacePage } from "../pages/index";
+
 const OPAQUE_ID_RE = /^[A-Za-z0-9_-]{16,128}$/u;
 
 type MutationUiState = "idle" | "loading" | "error";
@@ -62,6 +64,35 @@ type WsUiState = "connecting" | "connected" | "disconnected" | "failed";
 const apiErrorSchema = z.object({
   ok: z.literal(false),
   error: z.object({
+interface FleetStore {
+  syncSettings: { ui: boolean; tasks: boolean; chat: boolean };
+  updateSyncSettings: (settings: Partial<FleetStore["syncSettings"]>) => void;
+}
+
+function useFleetStore() {
+  const [settings, setSettings] = useState({ ui: true, tasks: true, chat: true });
+  return {
+    syncSettings: settings,
+    updateSyncSettings: (s: any) => setSettings({ ...settings, ...s })
+  };
+}
+
+function useSyncMesh(roomToken: string, onSync: (payload: any) => void) {
+  const queryClient = useQueryClient();
+  const senderId = useMemo(() => Math.random().toString(36).substr(2, 9), []);
+  const syncMutation = useMutation({
+    mutationFn: (payload: any) => fetch(`${roomToken === "staff-sync-room" ? `/api/staff-room/${roomToken}/sync` : `/api/customer-room/${roomToken}/sync`}`, {
+      method: "POST",
+      body: JSON.stringify({ payload, senderId }),
+      headers: { "Content-Type": "application/json" }
+    })
+  });
+  return { 
+    sync: (payload: any) => syncMutation.mutate(payload), 
+    senderId 
+  };
+}
+
     code: z.string(),
     message: z.string(),
     details: z.record(z.unknown()).optional()
@@ -247,6 +278,9 @@ function RootLayout() {
           <Link to="/reservation">Κράτηση</Link>
           <Link to="/staff/login">Staff Login</Link>
           <Link to="/staff">Dashboard</Link>
+          <Link to="/staff/scheduling">Scheduling</Link>
+          <Link to="/staff/fleet">Fleet</Link>
+          <Link to="/staff/washer">Washer</Link>
           <Link to="/staff/diagnostics">Diagnostics</Link>
         </nav>
       </header>
@@ -260,6 +294,19 @@ function LandingPage() {
     <PageShell title="CloudOPS">
       <p>Σαρώστε το QR και συνεχίστε στην ιδιωτική υποστήριξη κράτησης.</p>
       <Link to="/reservation">Έναρξη</Link>
+      <div style={{ marginTop: "2rem", borderTop: "1px solid #eee", paddingTop: "1rem" }}>
+        <p>Λήψη εφαρμογής:</p>
+        <button onClick={() => {
+          const link = document.createElement("link");
+          link.rel = "manifest";
+          link.href = "/manifest-staff.json";
+          document.head.appendChild(link);
+          alert("Τώρα μπορείτε να εγκαταστήσετε την εφαρμογή Προσωπικού από το μενού του προγράμματος περιήγησης.");
+        }} style={{ padding: "0.5rem 1rem", backgroundColor: "#111827", color: "white", border: "none", borderRadius: "0.4rem", cursor: "pointer" }}>
+          📲 Εγκατάσταση Staff App
+        </button>
+      </div>
+
     </PageShell>
   );
 }
@@ -487,6 +534,20 @@ function CustomerChatPage() {
   const [attachmentOpenError, setAttachmentOpenError] = useState<string | null>(null);
   const [openingAttachmentId, setOpeningAttachmentId] = useState<string | null>(null);
 
+  const { syncSettings, updateSyncSettings } = useFleetStore();
+  const { sync, senderId } = useSyncMesh(roomToken, (p) => {
+    if (syncSettings.ui && p.type === "composer_update") {
+      setComposer(p.value);
+    }
+  });
+
+
+  useEffect(() => {
+    if (syncSettings.chat) {
+       sync({ type: "composer_update", value: composer });
+    }
+  }, [composer, syncSettings.chat]);
+
   const roomToken = params.roomToken ?? "";
   const roomTokenValid = OPAQUE_ID_RE.test(roomToken);
 
@@ -625,6 +686,13 @@ function CustomerChatPage() {
           return;
         }
 
+        if (liveEvent.type === "tab_sync") {
+          if (liveEvent.senderId !== senderId) {
+            onSync(liveEvent.payload);
+          }
+          return;
+        }
+
         if (liveEvent.type === "case_status_changed") {
           void queryClient.invalidateQueries({ queryKey: ["customer-room", roomToken] });
         }
@@ -701,20 +769,37 @@ function CustomerChatPage() {
         <p style={{ margin: 0 }}>Σύνδεση: {statusBadge(wsState)}</p>
         <p style={{ margin: 0 }}>Υπόθεση: {room.room.caseStatus}</p>
       </Card>
+      <Card title="Συγχρονισμός">
+        <div style={{ display: "flex", gap: "1rem" }}>
+          <label><input type="checkbox" checked={syncSettings.chat} onChange={e => updateSyncSettings({ chat: e.target.checked })} /> Chat</label>
+          <label><input type="checkbox" checked={syncSettings.ui} onChange={e => updateSyncSettings({ ui: e.target.checked })} /> UI State State</label>
+        </div>
+      </Card>
+
 
       <Card title="Δυνατότητα μεταφόρτωσης">
-        <p style={{ margin: "0 0 0.6rem 0" }}>Κατάσταση: {room.uploadCapability.status}</p>
-        <div
-          style={{
-            border: "2px dashed #6b7280",
-            borderRadius: "0.5rem",
-            padding: "1rem",
-            textAlign: "center",
-            fontWeight: 700
-          }}
-        >
-          Μεγάλο κουμπί μεταφόρτωσης (placeholder)
-        </div>
+        {!room.reservation.hasUploadedEvidence ? (
+          <>
+            <p style={{ margin: "0 0 0.6rem 0" }}>Κατάσταση: {room.uploadCapability.status}</p>
+            <div
+              style={{
+                border: "2px dashed #6b7280",
+                borderRadius: "0.5rem",
+                padding: "1rem",
+                textAlign: "center",
+                fontWeight: 700
+              }}
+            >
+              Μεγάλο κουμπί μεταφόρτωσης (placeholder)
+            </div>
+          </>
+        ) : (
+          <p style={{ margin: 0, color: "#166534", fontWeight: 600 }}>
+            ✓ Η μεταφόρτωση αποδεικτικών έχει ολοκληρωθεί.
+          </p>
+        )}
+      </Card>
+
       </Card>
 
       <Card title="Υποστήριξη">
@@ -1092,9 +1177,35 @@ function StaffDashboardPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [previewCaseId, setPreviewCaseId] = useState<string | null>(null);
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
+  const [activeDept, setActiveDept] = useState<"fleet" | "shifts" | "inventory">("fleet");
+  const [chatMessage, setChatMessage] = useState("");
+  const [chatHistory, setChatHistory] = useState<any[]>([]);
+
+  const chatMutation = useMutation({
+    mutationFn: (msg: string) => fetch("/api/staff/chat", {
+      method: "POST",
+      body: JSON.stringify({ department: activeDept, message: msg }),
+      headers: { "Content-Type": "application/json" }
+    }),
+    onSuccess: (res: any) => setChatHistory([...chatHistory, { role: "user", content: chatMessage }, { role: "assistant", content: res.data.response }])
+  });
+
   const [narrowPreviewLayout, setNarrowPreviewLayout] = useState(false);
   const previewTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const staffSession = useStaffSessionQuery();
+
+  const { syncSettings } = useFleetStore();
+  const { sync } = useSyncMesh("staff-sync-room", (p) => {
+    if (syncSettings.ui && p.type === "filter_update") {
+      setStatusFilter(p.value);
+    }
+  });
+
+  useEffect(() => {
+    if (syncSettings.ui) {
+       sync({ type: "filter_update", value: statusFilter });
+    }
+  }, [statusFilter, syncSettings.ui]);
 
   const casesQuery = useQuery({
     queryKey: ["staff-case-list", statusFilter],
@@ -1192,8 +1303,74 @@ function StaffDashboardPage() {
       setPreviewCaseId(null);
       window.setTimeout(() => {
         previewTriggerRefs.current[closingCaseId]?.focus();
+      <Card title="Διαχείριση Αποθεμάτων (Inventory)">
+        <div style={{ display: "grid", gap: "0.5rem" }}>
+           <p style={{ margin: 0 }}>Soap (Σαπούνι): <strong>42 Λίτρα</strong> (Κάτω από το όριο!)</p>
+           <p style={{ margin: 0 }}>Wax (Κερί): <strong>120 Λίτρα</strong></p>
+           <button style={{ padding: "0.4rem", background: "#f59e0b", border: "none", color: "#fff", borderRadius: "0.3rem" }}>
+             ⚠️ Παραγγελία Προμηθειών
+           </button>
+        </div>
+      </Card>
+
       }, 0);
     };
+
+      <Card title="FleetOps Spreadsheet Dashboard (Google Sheets Scale)">
+        <div style={{ overflowX: "auto", border: "1px solid #ccc", borderRadius: "0.5rem" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
+            <thead>
+              <tr style={{ background: "#f3f4f6" }}>
+                <th style={{ border: "1px solid #ccc", padding: "0.5rem" }}>ID</th>
+                <th style={{ border: "1px solid #ccc", padding: "0.5rem" }}>Plate (Πινακίδα)</th>
+                <th style={{ border: "1px solid #ccc", padding: "0.5rem" }}>Model (Μοντέλο)</th>
+                <th style={{ border: "1px solid #ccc", padding: "0.5rem" }}>Mileage (Χλμ)</th>
+                <th style={{ border: "1px solid #ccc", padding: "0.5rem" }}>Status</th>
+                <th style={{ border: "1px solid #ccc", padding: "0.5rem" }}>Last Wash</th>
+                <th style={{ border: "1px solid #ccc", padding: "0.5rem" }}>Location</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[1, 2, 3, 4, 5].map((i) => (
+                <tr key={i}>
+                  <td style={{ border: "1px solid #ccc", padding: "0.5rem" }}>{i}</td>
+                  <td style={{ border: "1px solid #ccc", padding: "0.5rem" }} contentEditable>ABC-{1000 + i}</td>
+                  <td style={{ border: "1px solid #ccc", padding: "0.5rem" }} contentEditable>Vehicle Model {i}</td>
+                  <td style={{ border: "1px solid #ccc", padding: "0.5rem" }} contentEditable>{10000 + i * 500}</td>
+                  <td style={{ border: "1px solid #ccc", padding: "0.5rem" }} contentEditable>Ready</td>
+                  <td style={{ border: "1px solid #ccc", padding: "0.5rem" }} contentEditable>2026-03-31</td>
+                  <td style={{ border: "1px solid #ccc", padding: "0.5rem" }} contentEditable>Station 00{i}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Card title="OmniChat AI - Multi-Department Command Center">
+        <div style={{ background: "#f9fafb", padding: "1rem", borderRadius: "0.5rem", minHeight: "200px", display: "flex", flexDirection: "column", gap: "1rem" }}>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            {["fleet", "shifts", "inventory"].map((d) => (
+              <button key={d} onClick={() => setActiveDept(d as any)} style={{ padding: "0.3rem 0.6rem", background: activeDept === d ? "#2563eb" : "#e5e7eb", color: activeDept === d ? "#fff" : "#000", border: "none", borderRadius: "0.3rem" }}>
+                {d.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          <div style={{ flex: 1, overflowY: "auto", border: "1px solid #eee", padding: "0.5rem", maxHeight: "150px" }}>
+             {chatHistory.map((c, i) => (
+               <p key={i} style={{ margin: "0.3rem 0", color: c.role === "assistant" ? "#2563eb" : "#000" }}>
+                 <strong>{c.role === "assistant" ? "Gemini: " : "Εσείς: "}</strong>{c.content}
+               </p>
+             ))}
+          </div>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <input value={chatMessage} onChange={(e) => setChatMessage(e.target.value)} style={{ flex: 1, padding: "0.5rem", borderRadius: "0.3rem", border: "1px solid #ccc" }} placeholder="Πείτε στο Gemini τι να κάνει..." />
+            <button onClick={() => chatMutation.mutate(chatMessage)} style={{ padding: "0.5rem 1rem", background: "#111827", color: "#fff", border: "none", borderRadius: "0.3rem" }}>
+              Αποστολή
+            </button>
+          </div>
+        </div>
+      </Card>
 
     window.addEventListener("keydown", onKeyDown);
     return () => {
@@ -1401,6 +1578,19 @@ function StaffCaseDetailPage() {
   const [openingStaffAttachmentId, setOpeningStaffAttachmentId] = useState<string | null>(null);
 
   const staffSession = useStaffSessionQuery();
+  const { syncSettings } = useFleetStore();
+  const { sync, senderId } = useSyncMesh(caseId, (p) => {
+    if (syncSettings.chat && p.type === "message_draft_update") {
+      setMessageDraft(p.value);
+    }
+  });
+
+  useEffect(() => {
+    if (syncSettings.chat) {
+       sync({ type: "message_draft_update", value: messageDraft });
+    }
+  }, [messageDraft, syncSettings.chat]);
+
 
   const detailQuery = useQuery({
     queryKey: ["staff-case-detail", caseId],
@@ -1703,6 +1893,13 @@ function StaffCaseDetailPage() {
           void queryClient.invalidateQueries({ queryKey: ["staff-case-notes", caseId] });
           void queryClient.invalidateQueries({ queryKey: ["staff-case-timeline", caseId] });
           return;
+        if (liveEvent.type === "tab_sync") {
+          if (liveEvent.senderId !== senderId) {
+            onSync(liveEvent.payload);
+          }
+          return;
+        }
+
         }
 
         if (liveEvent.type === "case_status_changed") {
@@ -1795,6 +1992,26 @@ function StaffCaseDetailPage() {
       </Card>
 
       <Card title="Δυνατότητα μεταφόρτωσης">
+      <Card title="Ενέργειες">
+        <button 
+          onClick={() => {
+            fetch(`/api/staff/reservations/${detail.reservation.id}/export`)
+              .then(res => res.json())
+              .then(data => {
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `evidence_vault_${detail.reservation.reservationNumber}.json`;
+                a.click();
+              });
+          }}
+          style={{ padding: "0.5rem 1rem", backgroundColor: "#2563eb", color: "white", border: "none", borderRadius: "0.4rem", cursor: "pointer" }}
+        >
+          📦 Εξαγωγή Evidence Vault (JSON)
+        </button>
+      </Card>
+
         <p style={{ margin: 0 }}>Κατάσταση: {detail.uploadCapability.status}</p>
         <p style={{ margin: 0 }}>
           Χρήση: {detail.uploadCapability.usedFilesCount}/{detail.uploadCapability.maxFiles}
@@ -2076,9 +2293,207 @@ export const router = createBrowserRouter([
       { path: "c/:roomToken", element: <CustomerChatPage /> },
       { path: "staff/login", element: <StaffLoginPage /> },
       { path: "staff", element: <StaffDashboardPage /> },
+      { path: "staff/scheduling", element: <SchedulingPage /> },
+      { path: "staff/fleet", element: <FleetPage /> },
+      { path: "staff/washer", element: <WasherWorkspacePage /> },
       { path: "staff/cases/:caseId", element: <StaffCaseDetailPage /> },
       { path: "staff/diagnostics", element: <DiagnosticsPage /> },
       { path: "*", element: <NotFoundPage /> }
     ]
   }
 ]);
+
+
+function CustomerQRWelcomePage() {
+  const { stationId } = useParams();
+  const { stationId } = useParams();
+  const navigate = useNavigate();
+  const [location, setLocation] = useState<any>(null);
+  
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition((pos) => {
+        setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        console.log("Location detected: ", pos.coords.latitude, pos.coords.longitude);
+      });
+    }
+  }, []);
+
+    <div className='p-8'>
+      <h1 className='text-2xl font-bold'>Καλώς ήρθατε στο FleetOps</h1>
+      <p className='mt-2'>Σταθμός: {stationId}</p>
+      <button 
+        onClick={() => navigate('/reservation')} 
+        className='mt-4 bg-blue-600 text-white px-4 py-2 rounded'
+      >
+        Συνέχεια με Αριθμό Κράτησης
+      </button>
+    </div>
+  );
+}
+
+function StaffShiftsPage() {
+  const [clockInStatus, setClockInStatus] = useState<"idle" | "active">("idle");
+  const [clockInStatus, setClockInStatus] = useState<"idle" | "active">("idle");
+  const [activeTab, setActiveTab] = useState<"grid" | "chat">("grid");
+  const [shiftData, setShiftData] = useState<any[]>([
+    { staff: "John Doe", mon: "08-16", tue: "08-16", wed: "08-16", thu: "08-16", fri: "08-16", sat: "OFF", sun: "OFF" },
+    { staff: "Jane Smith", mon: "16-24", tue: "16-24", wed: "16-24", thu: "16-24", fri: "16-24", sat: "OFF", sun: "OFF" }
+  ]);
+  
+  const clockInMutation = useMutation({
+    mutationFn: () => fetch("/api/staff/shifts/clock-in", { method: "POST" }),
+    onSuccess: () => setClockInStatus("active")
+  });
+
+  return (
+    <PageShell title="Workforce (Shifts) - Supervisor OS">
+      <div style={{ display: "flex", gap: "1rem", marginBottom: "1rem" }}>
+        <button onClick={() => setActiveTab("grid")} style={{ padding: "0.5rem 1rem", background: activeTab === "grid" ? "#2563eb" : "#e5e7eb", border: "none", color: activeTab === "grid" ? "#fff" : "#000", borderRadius: "0.4rem" }}>
+           📅 Grid View (Google Sheets Scale)
+        </button>
+        <button onClick={() => setActiveTab("chat")} style={{ padding: "0.5rem 1rem", background: activeTab === "chat" ? "#2563eb" : "#e5e7eb", border: "none", color: activeTab === "chat" ? "#fff" : "#000", borderRadius: "0.4rem" }}>
+           🤖 Supervisor AI Chat
+        </button>
+      </div>
+
+      {activeTab === "grid" ? (
+        <Card title="Shift Spreadsheet (Editable & Scalable)">
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: "#f3f4f6" }}>
+                  <th style={{ border: "1px solid #ccc", padding: "0.5rem" }}>Staff</th>
+                  <th style={{ border: "1px solid #ccc", padding: "0.5rem" }}>Mon</th>
+                  <th style={{ border: "1px solid #ccc", padding: "0.5rem" }}>Tue</th>
+                  <th style={{ border: "1px solid #ccc", padding: "0.5rem" }}>Wed</th>
+                  <th style={{ border: "1px solid #ccc", padding: "0.5rem" }}>Thu</th>
+                  <th style={{ border: "1px solid #ccc", padding: "0.5rem" }}>Fri</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shiftData.map((s, i) => (
+                  <tr key={i}>
+                    <td style={{ border: "1px solid #ccc", padding: "0.5rem" }} contentEditable>{s.staff}</td>
+                    <td style={{ border: "1px solid #ccc", padding: "0.5rem" }} contentEditable>{s.mon}</td>
+                    <td style={{ border: "1px solid #ccc", padding: "0.5rem" }} contentEditable>{s.tue}</td>
+                    <td style={{ border: "1px solid #ccc", padding: "0.5rem" }} contentEditable>{s.wed}</td>
+                    <td style={{ border: "1px solid #ccc", padding: "0.5rem" }} contentEditable>{s.thu}</td>
+                    <td style={{ border: "1px solid #ccc", padding: "0.5rem" }} contentEditable>{s.fri}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      ) : (
+        <Card title="Supervisor AI Command Center">
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+             <p>Πείτε στο Gemini να επεξεργαστεί τις βάρδιες:</p>
+             <div style={{ background: "#f9fafb", padding: "1rem", borderRadius: "0.5rem", minHeight: "100px" }}>
+                <strong>Gemini:</strong> Έτοιμος για οποιαδήποτε επεξεργασία ή θόλωση (blur) βαρδιών.
+             </div>
+             <input style={{ padding: "0.5rem", borderRadius: "0.3rem", border: "1px solid #ccc" }} placeholder="π.χ. "Θόλωσε την Τρίτη για τον John Doe"" />
+             <button style={{ padding: "0.5rem", background: "#111827", color: "#fff", border: "none", borderRadius: "0.3rem" }}>
+               Εκτέλεση Αλλαγής
+             </button>
+          </div>
+        </Card>
+      )}
+
+      <Card title="Κατάσταση Βάρδιας">
+
+    onSuccess: () => setClockInStatus("active")
+  });
+
+  return (
+    <PageShell title="Βάρδιες & Προσωπικό">
+      <Card title="Κατάσταση Βάρδιας">
+        <p>Τρέχουσα κατάσταση: <strong>{clockInStatus === "active" ? "Ενεργή" : "Ανενεργή"}</strong></p>
+        <button 
+          onClick={() => clockInMutation.mutate()} 
+          disabled={clockInStatus === "active" || clockInMutation.isPending}
+          className="mt-4 bg-blue-600 text-white px-4 py-2 rounded"
+        >
+          {clockInStatus === "active" ? "Έχετε συνδεθεί" : "Έναρξη Βάρδιας (Clock-in)"}
+        </button>
+      </Card>
+    </PageShell>
+  );
+}
+
+function StaffWashRegistrationPage() {
+  const [identifier, setIdentifier] = useState("");
+  const [aiAlert, setAiAlert] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"new" | "history">("new");
+  const [washHistory, setWashHistory] = useState<any[]>([]);
+  const [editRequest, setEditRequest] = useState<any>(null);
+  
+  const washMutation = useMutation({
+    mutationFn: (id: string) => fetch("/api/staff/washes/register", {
+      method: "POST",
+      body: JSON.stringify({ identifier: id, stationId: "STATION_001" }),
+      headers: { "Content-Type": "application/json" }
+    }),
+    onSuccess: (res: any) => {
+      setRegStatus("Επιτυχής καταχώρηση!");
+      if (res.data?.aiFlag) setAiAlert("⚠️ ΠΡΟΣΟΧΗ: Το AI εντόπισε πιθανή ζημιά στο όχημα!");
+      setIdentifier("");
+      setWashHistory([{ id: res.data.washId, identifier: identifier, status: "completed", timestamp: new Date().toISOString() }, ...washHistory]);
+    }
+  });
+
+  const editMutation = useMutation({
+    mutationFn: (data: any) => fetch("/api/staff/washes/edit-request", {
+      method: "POST",
+      body: JSON.stringify(data),
+      headers: { "Content-Type": "application/json" }
+    }),
+    onSuccess: () => alert("Το αίτημα επεξεργασίας στάλθηκε για έγκριση στο προσωπικό.")
+  });
+
+  const [regStatus, setRegStatus] = useState<string | null>(null);
+
+  const washMutation = useMutation({
+    mutationFn: (id: string) => fetch("/api/staff/washes/register", {
+      method: "POST",
+      body: JSON.stringify({ identifier: id, stationId: "STATION_001" }),
+      headers: { "Content-Type": "application/json" }
+    }),
+    onSuccess: (res: any) => {
+      setRegStatus("Επιτυχής καταχώρηση!");
+      if (res.data?.aiFlag) {
+         setAiAlert("⚠️ ΠΡΟΣΟΧΗ: Το AI εντόπισε πιθανή ζημιά στο όχημα!");
+      }
+      setIdentifier("");
+    }
+
+  });
+
+  return (
+    <PageShell title="Καταχώρηση Πλύσης">
+      <Card title="Νέα Καταχώρηση">
+        <label className="block text-sm font-medium text-gray-700">Αριθμός Κράτησης / Πινακίδα</label>
+        <input 
+          type="text" 
+          value={identifier} 
+          onChange={(e) => setIdentifier(e.target.value)} 
+          className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+          placeholder="π.χ. ABC-1234"
+        />
+        <button 
+          onClick={() => washMutation.mutate(identifier)}
+          disabled={!identifier || washMutation.isPending}
+          className="mt-4 bg-green-600 text-white px-4 py-2 rounded"
+        {aiAlert && <div style={{ background: "#fee2e2", border: "1px solid #dc2626", color: "#b91c1c", padding: "1rem", marginTop: "1rem", borderRadius: "0.5rem" }}>{aiAlert}</div>}
+
+        >
+          {washMutation.isPending ? "Καταχώρηση..." : "Ολοκλήρωση Πλύσης"}
+        </button>
+        {regStatus && <p className="mt-2 text-green-600 font-medium">{regStatus}</p>}
+      </Card>
+    </PageShell>
+  );
+}
+
+

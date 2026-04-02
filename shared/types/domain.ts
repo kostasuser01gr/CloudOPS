@@ -41,6 +41,7 @@ export interface ReservationSummary {
   pickupDayStartEpochS: number;
   pickupDayEndEpochS: number;
   status: "active" | "cancelled" | "closed";
+  hasUploadedEvidence: boolean;
 }
 
 export interface CustomerSessionView {

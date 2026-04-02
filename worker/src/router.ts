@@ -69,6 +69,9 @@ import type {
   UploadCapabilityView
 } from "@shared/types/domain";
 import type { RuntimeEnv } from "./env";
+import { staffExportEvidence, getInventory, updateInventory, deptChatHandler, fileIngestHandler } from "./fleet";
+import { staffFleetVehicles, staffFleetVehicleCreate, staffFleetShifts, staffFleetWashes, staffFleetWashCreate } from "./fleet-ops";
+import { handleGenerateSchedule, handleGetSchedule, handleUpdateShift, handlePublishSchedule, handleGetEmployees, handleGetStations } from "./scheduling";
 
 const OPAQUE_ID_RE = /^[A-Za-z0-9_-]{16,128}$/u;
 const CUSTOMER_MESSAGE_MAX = 2000;
@@ -281,6 +284,7 @@ type ReservationRow = {
   pickup_day_start_epoch_s: number;
   pickup_day_end_epoch_s: number;
   status: "active" | "cancelled" | "closed";
+  has_uploaded_evidence: number;
 };
 
 type ChatRoomRow = {
@@ -319,6 +323,7 @@ type CustomerSessionJoinRow = {
   pickup_day_start_epoch_s: number;
   pickup_day_end_epoch_s: number;
   reservation_status: "active" | "cancelled" | "closed";
+  has_uploaded_evidence: number;
   opaque_room_token: string;
   case_status: CaseStatus;
   last_event_seq: number;
@@ -393,6 +398,7 @@ type CaseDetailRow = {
   pickup_day_start_epoch_s: number;
   pickup_day_end_epoch_s: number;
   reservation_status: "active" | "cancelled" | "closed";
+  has_uploaded_evidence: number;
   room_token: string;
   case_status: CaseStatus;
   last_event_seq: number;
@@ -421,6 +427,7 @@ function mapReservation(row: ReservationRow | CustomerSessionJoinRow | CaseDetai
     pickupDateLocal: row.pickup_date_local as ReservationSummary["pickupDateLocal"],
     pickupDayStartEpochS: row.pickup_day_start_epoch_s,
     pickupDayEndEpochS: row.pickup_day_end_epoch_s,
+    hasUploadedEvidence: row.has_uploaded_evidence === 1,
     status: (row as ReservationRow).status ?? (row as CustomerSessionJoinRow).reservation_status
   };
 }
@@ -652,7 +659,8 @@ async function findReservationByNumber(runtime: RuntimeEnv, reservationNumber: s
       r.pickup_date_local,
       r.pickup_day_start_epoch_s,
       r.pickup_day_end_epoch_s,
-      r.status
+      r.status,
+      r.has_uploaded_evidence
     FROM reservations r
     INNER JOIN stations s ON s.id = r.station_id
     WHERE r.reservation_number = ?
@@ -889,7 +897,8 @@ async function getCustomerAuthContext(runtime: RuntimeEnv, request: Request): Pr
       r.pickup_date_local,
       r.pickup_day_start_epoch_s,
       r.pickup_day_end_epoch_s,
-      r.status AS reservation_status,
+      r.status,
+      r.has_uploaded_evidence AS reservation_status,
       cr.opaque_room_token,
       cr.case_status,
       cr.last_event_seq,
@@ -1506,7 +1515,8 @@ async function resolveCaseById(runtime: RuntimeEnv, caseId: string): Promise<Cas
       r.pickup_date_local,
       r.pickup_day_start_epoch_s,
       r.pickup_day_end_epoch_s,
-      r.status AS reservation_status,
+      r.status,
+      r.has_uploaded_evidence AS reservation_status,
       cr.opaque_room_token AS room_token,
       cr.case_status,
       cr.last_event_seq,
@@ -1549,6 +1559,7 @@ function mapCaseDetail(row: CaseDetailRow, messages: ChatMessageView[]): StaffCa
       pickupDateLocal: row.pickup_date_local as ReservationSummary["pickupDateLocal"],
       pickupDayStartEpochS: row.pickup_day_start_epoch_s,
       pickupDayEndEpochS: row.pickup_day_end_epoch_s,
+    hasUploadedEvidence: row.has_uploaded_evidence === 1,
       status: row.reservation_status
     },
     room: mapRoomSummary({
@@ -1938,6 +1949,13 @@ async function customerRoomConnect(runtime: RuntimeEnv, request: Request, reques
   });
 }
 
+async function checkReservationEvidence(runtime: RuntimeEnv, reservationId: string): Promise<boolean> {
+  const row = await runtime.bindings.DB.prepare(
+    "SELECT has_uploaded_evidence FROM reservations WHERE id = ?"
+  ).bind(reservationId).first<{ has_uploaded_evidence: number }>();
+  return (row?.has_uploaded_evidence ?? 0) === 1;
+}
+
 async function customerUploadIntent(runtime: RuntimeEnv, request: Request, requestId: string, roomToken: string): Promise<Response> {
   const auth = await getCustomerAuthContext(runtime, request);
   if (!auth.ok) {
@@ -1971,6 +1989,10 @@ async function customerUploadIntent(runtime: RuntimeEnv, request: Request, reque
 
   if (!validated.ok) {
     return fail(requestId, 400, "INVALID_REQUEST", "Unable to continue");
+  }
+
+  if (await checkReservationEvidence(runtime, auth.reservation.id)) {
+    return fail(requestId, 403, "UPLOAD_ALREADY_COMPLETED", "Evidence has already been uploaded for this reservation.");
   }
 
   if (auth.uploadCapability.status !== "enabled") {
@@ -2660,7 +2682,8 @@ async function staffCaseList(runtime: RuntimeEnv, request: Request, requestId: s
       r.pickup_date_local,
       r.pickup_day_start_epoch_s,
       r.pickup_day_end_epoch_s,
-      r.status AS reservation_status,
+      r.status,
+      r.has_uploaded_evidence AS reservation_status,
       COALESCE(cr.last_message_epoch_s, r.pickup_day_start_epoch_s) AS updated_epoch_s
     FROM chat_rooms cr
     INNER JOIN reservations r ON r.id = cr.reservation_id
@@ -2701,6 +2724,7 @@ async function staffCaseList(runtime: RuntimeEnv, request: Request, requestId: s
       pickup_day_start_epoch_s: number;
       pickup_day_end_epoch_s: number;
       reservation_status: "active" | "cancelled" | "closed";
+  has_uploaded_evidence: number;
       updated_epoch_s: number;
     }
   >();
@@ -2715,6 +2739,7 @@ async function staffCaseList(runtime: RuntimeEnv, request: Request, requestId: s
       pickupDateLocal: row.pickup_date_local as ReservationSummary["pickupDateLocal"],
       pickupDayStartEpochS: row.pickup_day_start_epoch_s,
       pickupDayEndEpochS: row.pickup_day_end_epoch_s,
+    hasUploadedEvidence: row.has_uploaded_evidence === 1,
       status: row.reservation_status
     },
     stationCode: row.station_code,
@@ -3775,6 +3800,19 @@ export async function routeRequest(
     return customerSendMessage(runtime, request, requestId, roomToken);
   }
 
+  const customerSyncMatch = pathname.match(/^\/api\/customer-room\/([^/]+)\/sync$/u);
+  if (customerSyncMatch && method === "POST") {
+    const roomToken = decodeURIComponent(customerSyncMatch[1] ?? "");
+    if (!OPAQUE_ID_RE.test(roomToken)) return fail(requestId, 404, "NOT_FOUND", "Unable to continue");
+    return customerRoomSync(runtime, request, requestId, roomToken);
+  }
+
+  const staffSyncMatch = pathname.match(/^\/api\/staff-room\/([^/]+)\/sync$/u);
+  if (staffSyncMatch && method === "POST") {
+    const roomToken = decodeURIComponent(staffSyncMatch[1] ?? "");
+    return customerRoomSync(runtime, request, requestId, roomToken);
+  }
+
   const customerAttachmentsMatch = pathname.match(/^\/api\/customer-room\/([^/]+)\/attachments$/u);
   if (customerAttachmentsMatch && method === "POST") {
     const roomToken = decodeURIComponent(customerAttachmentsMatch[1] ?? "");
@@ -3921,11 +3959,79 @@ export async function routeRequest(
     if (!OPAQUE_ID_RE.test(caseId)) {
       return fail(requestId, 404, "NOT_FOUND", "Unable to continue");
     }
+  const staffExportMatch = pathname.match(/^\/api\/staff\/reservations\/([^/]+)\/export$/u);
+  if (staffExportMatch && method === "GET") {
+    const reservationId = decodeURIComponent(staffExportMatch[1] ?? "");
+    if (!OPAQUE_ID_RE.test(reservationId)) return fail(requestId, 404, "NOT_FOUND", "Unable to continue");
+    return staffExportEvidence(runtime, request, requestId, reservationId);
+  }
+
+  if (pathname === "/api/staff/inventory" && method === "GET") {
+    return getInventory(runtime, request, requestId);
+  }
+  if (pathname === "/api/staff/inventory/update" && method === "POST") {
+    return updateInventory(runtime, request, requestId);
+  }
+  if (pathname === "/api/staff/chat" && method === "POST") {
+    return deptChatHandler(runtime, request, requestId);
+  }
+  if (pathname === "/api/staff/ingest" && method === "POST") {
+    return fileIngestHandler(runtime, request, requestId);
+  }
+
+
     return staffTimeline(runtime, request, requestId, caseId);
+  }
+
+  if (pathname === "/api/staff/shifts/clock-in" && method === "POST") {
+    return staffClockIn(runtime, request, requestId);
+  }
+  if (pathname === "/api/staff/washes/register" && method === "POST") {
+    return staffRegisterWash(runtime, request, requestId);
   }
 
   if (pathname === "/api/staff/canned-replies" && method === "GET") {
     return staffCannedReplies(runtime, request, requestId);
+  }
+
+  // ── Scheduling Engine Routes ──
+  if (pathname === "/api/staff/schedules/generate" && method === "POST") {
+    return handleGenerateSchedule(runtime, request, requestId);
+  }
+  if (pathname === "/api/staff/schedules" && method === "GET") {
+    return handleGetSchedule(runtime, request, requestId);
+  }
+  if (pathname === "/api/staff/schedules/publish" && method === "POST") {
+    return handlePublishSchedule(runtime, request, requestId);
+  }
+  const shiftUpdateMatch = pathname.match(/^\/api\/staff\/schedules\/shifts\/([^/]+)$/u);
+  if (shiftUpdateMatch && method === "PATCH") {
+    const shiftId = decodeURIComponent(shiftUpdateMatch[1] ?? "");
+    if (!OPAQUE_ID_RE.test(shiftId)) return fail(requestId, 404, "NOT_FOUND", "Invalid shift ID");
+    return handleUpdateShift(runtime, request, requestId, shiftId);
+  }
+  if (pathname === "/api/staff/employees" && method === "GET") {
+    return handleGetEmployees(runtime, request, requestId);
+  }
+  if (pathname === "/api/staff/stations" && method === "GET") {
+    return handleGetStations(runtime, request, requestId);
+  }
+
+  // ── Fleet Management Routes ──
+  if (pathname === "/api/staff/fleet/vehicles" && method === "GET") {
+    return staffFleetVehicles(runtime, request, requestId);
+  }
+  if (pathname === "/api/staff/fleet/vehicles" && method === "POST") {
+    return staffFleetVehicleCreate(runtime, request, requestId);
+  }
+  if (pathname === "/api/staff/fleet/shifts" && method === "GET") {
+    return staffFleetShifts(runtime, request, requestId);
+  }
+  if (pathname === "/api/staff/fleet/washes" && method === "GET") {
+    return staffFleetWashes(runtime, request, requestId);
+  }
+  if (pathname === "/api/staff/fleet/washes" && method === "POST") {
+    return staffFleetWashCreate(runtime, request, requestId);
   }
 
   if (pathname.startsWith("/api/")) {
@@ -3936,4 +4042,33 @@ export async function routeRequest(
   }
 
   return serveSpa(runtime, request);
+}
+
+
+export async function staffClockIn(runtime: RuntimeEnv, request: Request, requestId: string): Promise<Response> {
+  const staff = await loadStaffSession(runtime, request, true);
+  if (!staff.ok) return fail(requestId, 401, 'UNAUTHORIZED', 'Unable to continue');
+  return ok(requestId, { status: 'active', staffId: staff.session.staffUserId });
+}
+
+export async function staffRegisterWash(runtime: RuntimeEnv, request: Request, requestId: string): Promise<Response> {
+  const staff = await loadStaffSession(runtime, request, true);
+  if (!staff.ok) return fail(requestId, 401, 'UNAUTHORIZED', 'Unable to continue');
+  return ok(requestId, { washId: newOpaqueId(), status: 'completed' });
+}
+
+
+async function customerRoomSync(runtime: RuntimeEnv, request: Request, requestId: string, roomToken: string): Promise<Response> {
+  const auth = await getCustomerAuthContext(runtime, request);
+  if (!auth.ok || auth.room.roomToken !== roomToken) return fail(requestId, 401, 'UNAUTHORIZED', 'Unable to continue');
+  const body = await parseJsonBody(request, z.object({ payload: z.record(z.any()), senderId: z.string() }));
+  if (!body.success) return fail(requestId, 400, 'INVALID_REQUEST', 'Invalid sync payload');
+  await publishLiveEvent(runtime, {
+    type: 'tab_sync',
+    roomToken,
+    senderId: body.data.senderId,
+    payload: body.data.payload,
+    sentEpochS: nowEpochS()
+  }, { requestId, mutationKind: 'tab_sync', doRoomName: auth.room.doRoomName });
+  return ok(requestId, { synced: true });
 }

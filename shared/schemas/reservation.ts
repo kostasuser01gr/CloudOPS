@@ -321,6 +321,14 @@ export const liveEventSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("note_created"),
     roomToken: opaqueIdSchema,
+  z.object({
+    type: z.literal("tab_sync"),
+    roomToken: opaqueIdSchema,
+    senderId: opaqueIdSchema,
+    payload: z.record(z.any()),
+    sentEpochS: epochSecondsSchema
+  }),
+
     noteId: opaqueIdSchema,
     createdEpochS: epochSecondsSchema
   })
