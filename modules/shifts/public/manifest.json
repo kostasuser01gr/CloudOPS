@@ -1,0 +1,21 @@
+{
+  "name": "ShiftWise Car Rental OS",
+  "short_name": "ShiftWise",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1e293b",
+  "theme_color": "#2563eb",
+  "description": "Enterprise Fleet & Workforce Management Platform",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3144/3144456.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3144/3144456.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
